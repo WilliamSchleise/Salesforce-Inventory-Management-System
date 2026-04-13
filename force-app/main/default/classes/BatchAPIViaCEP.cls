@@ -1,75 +1,78 @@
-public class BatchVIACEP implements Database.Batchable<sObject>, Schedulable{
-    
-    public Database.QueryLocator start(Database.BatchableContext bc){
-        return Database.getQueryLocator([SELECT Id, BillingPostalCode FROM Account]);
+public class BatchVIACEP implements Database.Batchable<sObject>, Schedulable, Database.AllowsCallouts {
+
+    public Database.QueryLocator start(Database.BatchableContext bc) {
+        return Database.getQueryLocator([
+            SELECT Id, BillingPostalCode 
+            FROM Account 
+            WHERE BillingPostalCode != null 
+              AND LastModifiedDate = TODAY
+        ]);
     }
-    
+
     public void execute(Database.BatchableContext context, List<Account> scope) {
-        
         List<Account> accountsToUpdate = new List<Account>();
-        for(Account acc : scope){
-            if(acc.BillingPostalCode != null){
-                Try{
-                    Http h = new Http();
-                    HttpRequest req = new HttpRequest();
-                    req.setEndpoint('https://viacep.com.br/ws/' + acc.BillingPostalCode + '/json/');
-                    req.setMethod('GET');
-                    
-                    
-                    HttpResponse res = h.send(req);
-                    
-                    
-                    if(res.getStatusCode() == 200){
-                        ViaCEP endereco = (ViaCEP) JSON.deserialize(res.getBody(), ViaCEP.class);
-                        
+
+        System.debug('Iniciando o processamento de ' + scope.size() + ' contas.');
+
+        for (Account acc : scope) {
+            try {
+
+                Http h = new Http();
+                HttpRequest req = new HttpRequest();
+                req.setEndpoint('https://viacep.com.br/ws/' + acc.BillingPostalCode + '/json/');
+                req.setMethod('GET');
+                req.setTimeout(5000); // 5 segundos
+
+                HttpResponse res = h.send(req);
+
+                if (res.getStatusCode() == 200 && !String.isBlank(res.getBody())) {
+                    ViaCEP endereco = (ViaCEP) JSON.deserialize(res.getBody(), ViaCEP.class);
+
+                    if (endereco != null && !String.isBlank(endereco.cep)) {
                         acc.BillingStreet = endereco.logradouro;
                         acc.BillingCity = endereco.localidade;
                         acc.BillingState = endereco.uf;
                         acc.BillingCountry = 'Brazil';
                         acc.BillingPostalCode = endereco.cep;
-                        
+
                         accountsToUpdate.add(acc);
-                        
-                    } 
-                    
-                } 
-                catch(Exception e){
-                    System.debug('Erro ao consultar o CEP:' + e.getMessage());
+                    }
+                } else {
+                    System.debug('Erro na resposta da API para o CEP: ' + acc.BillingPostalCode);
                 }
                 
+            } catch (Exception e) {
+                System.debug('Erro ao consultar o CEP ' + acc.BillingPostalCode + ': ' + e.getMessage());
             }
-            
+        }
+
+        if (!accountsToUpdate.isEmpty()) {
+            try {
+                update accountsToUpdate;
+            } catch (DmlException dmlEx) {
+                System.debug('Erro ao atualizar contas: ' + dmlEx.getMessage());
             }
-        
-    		if(!accountsToUpdate.IsEmpty()){
-                update accountsToUpdate;    
+        }
     }
+
+    public void finish(Database.BatchableContext bc) {
+        System.debug('BatchVIACEP finalizado com sucesso.');
     }
-    
-    public void finish(Database.BatchableContext bc){
-        System.debug('Batch Job Finished');
+
+    public void execute(SchedulableContext sc) {
+        Database.executeBatch(new BatchVIACEP(), 50);
     }
-    
-    
-    public void execute(SchedulableContext sc){
-        BatchVIACEP batch = new BatchVIACEP();
-        Database.executeBatch(batch, 50);
+
+    public class ViaCEP {
+        public String cep;
+        public String logradouro;
+        public String complemento;
+        public String bairro;
+        public String localidade;
+        public String uf;
+        public String ibge;
+        public String gia;
+        public String ddd;
+        public String siafi;
     }
-    
-    
-    public class ViaCEP{
-        String cep;
-        String logradouro;
-        String complemento;
-        String bairro;
-        String localidade;
-        String uf;
-        String ibge;
-        String gia;
-        String ddd;
-        String siafi;
-    }
-    
-    
-    
 }
